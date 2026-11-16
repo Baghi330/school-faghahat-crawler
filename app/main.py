@@ -1,6 +1,8 @@
 import argparse
 import asyncio
 import logging
+from pathlib import Path
+from typing import Optional
 
 from app.config import settings
 from app.crawler import BookCrawler
@@ -8,6 +10,37 @@ from app.db import DatabaseManager
 from app.site import SiteClient
 
 logger = logging.getLogger("school_faghahat_crawler")
+
+
+def normalize_numeric_string(raw_text: str) -> str:
+    persian_arabic_digits = "۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩"
+    ascii_digits = "01234567890123456789"
+    translation_table = str.maketrans(persian_arabic_digits, ascii_digits)
+    return raw_text.translate(translation_table).strip()
+
+
+def prompt_for_start_book_id(cli_value: Optional[int] = None) -> int:
+    if cli_value is not None and cli_value > 0:
+        return cli_value
+
+    output_books_directory = Path(settings.OUTPUT_DIR) / "books"
+    existing_numeric_ids = []
+    if output_books_directory.exists():
+        for entry in output_books_directory.iterdir():
+            if entry.is_dir() and entry.name.isdigit():
+                existing_numeric_ids.append(int(entry.name))
+
+    suggested_start_id = (max(existing_numeric_ids) + 1) if existing_numeric_ids else 1000000
+
+    prompt_text = f"شناسه عددی شروع کتاب (book_id) را وارد کنید [پیش‌فرض: {suggested_start_id}]: "
+    try:
+        user_input = normalize_numeric_string(input(prompt_text))
+        if user_input.isdigit():
+            return int(user_input)
+    except (EOFError, KeyboardInterrupt):
+        pass
+
+    return suggested_start_id
 
 
 async def execute_discovery() -> None:
@@ -41,11 +74,13 @@ def execute_list_books() -> None:
 
 
 async def execute_single_crawl(arguments: argparse.Namespace) -> None:
+    start_book_id = prompt_for_start_book_id(getattr(arguments, "start_book_id", None))
     crawler = BookCrawler()
     try:
         crawl_result = await crawler.crawl(
             source_book_id=arguments.source_book_id,
             only_volume_number=getattr(arguments, "volume", None),
+            custom_book_id=str(start_book_id),
         )
         logger.info("Crawl completed successfully: %s", crawl_result)
     finally:
@@ -62,12 +97,34 @@ async def execute_crawl_all(arguments: argparse.Namespace) -> None:
     target_books = database.list_books(arguments.limit)
     database.close()
 
-    logger.info("Starting crawl-all for %s books...", len(target_books))
-    for book_entry in target_books:
+    total_to_crawl = len(target_books)
+    if total_to_crawl == 0:
+        logger.warning("No books found in database to crawl.")
+        return
+
+    start_book_id = prompt_for_start_book_id(getattr(arguments, "start_book_id", None))
+    logger.info(
+        "Starting crawl-all for %s books (Starting Book ID: %s)...",
+        total_to_crawl,
+        start_book_id,
+    )
+
+    for offset, book_entry in enumerate(target_books):
+        current_book_id = str(start_book_id + offset)
         crawler = BookCrawler()
         try:
-            result = await crawler.crawl(book_entry["source_id"])
-            logger.info("Successfully finished book %s: %s", book_entry["source_id"], result)
+            logger.info(
+                "[%s/%s] Crawling book source_id=%s with book_id=%s...",
+                offset + 1,
+                total_to_crawl,
+                book_entry["source_id"],
+                current_book_id,
+            )
+            result = await crawler.crawl(
+                source_book_id=book_entry["source_id"],
+                custom_book_id=current_book_id,
+            )
+            logger.info("Successfully finished book %s: %s", book_entry["source_id"], result.get("book_id"))
         except Exception:
             logger.exception("Failed to crawl book %s", book_entry["source_id"])
         finally:
@@ -88,40 +145,45 @@ async def execute_crawl_category(arguments: argparse.Namespace) -> None:
 
         logger.info("Discovered %s books in category '%s'", len(category_books), category_input)
 
-        registered_books_list = []
         for source_id, book_url in category_books.items():
             database.register_discovered_url(book_url, source_id)
-            assigned_book_id = database.register_book(source_id, url=book_url)
-            registered_books_list.append({
-                "source_id": source_id,
-                "book_id": assigned_book_id,
-                "url": book_url,
-            })
     finally:
         await site_client.close()
         database.close()
 
     limit_count = getattr(arguments, "limit", 0)
+    category_items = list(category_books.items())
     if limit_count > 0:
-        registered_books_list = registered_books_list[:limit_count]
+        category_items = category_items[:limit_count]
 
-    total_to_crawl = len(registered_books_list)
-    logger.info("Starting crawl for %s books in category '%s'...", total_to_crawl, category_input)
+    total_to_crawl = len(category_items)
+    start_book_id = prompt_for_start_book_id(getattr(arguments, "start_book_id", None))
 
-    for index, book_entry in enumerate(registered_books_list, 1):
+    logger.info(
+        "Starting crawl for %s books in category '%s' (Starting Book ID: %s)...",
+        total_to_crawl,
+        category_input,
+        start_book_id,
+    )
+
+    for offset, (source_id, book_url) in enumerate(category_items):
+        current_book_id = str(start_book_id + offset)
         crawler = BookCrawler()
         try:
             logger.info(
-                "[%s/%s] Crawling book source_id=%s (book_id=%s)...",
-                index,
+                "[%s/%s] Crawling book source_id=%s with book_id=%s...",
+                offset + 1,
                 total_to_crawl,
-                book_entry["source_id"],
-                book_entry["book_id"],
+                source_id,
+                current_book_id,
             )
-            result = await crawler.crawl(book_entry["source_id"])
-            logger.info("Finished book %s: %s", book_entry["source_id"], result.get("book_id"))
+            result = await crawler.crawl(
+                source_book_id=source_id,
+                custom_book_id=current_book_id,
+            )
+            logger.info("Finished book %s: %s", source_id, result.get("book_id"))
         except Exception:
-            logger.exception("Failed to crawl category book %s", book_entry["source_id"])
+            logger.exception("Failed to crawl category book %s", source_id)
         finally:
             await crawler.close()
 
@@ -144,12 +206,15 @@ def main() -> None:
     crawl_subparser = subparsers.add_parser("crawl", help="Crawl a single book")
     crawl_subparser.add_argument("--source-book-id", required=True, help="Source book ID in lib.eshia.ir")
     crawl_subparser.add_argument("--volume", type=int, default=None, help="Specific volume to crawl")
+    crawl_subparser.add_argument("--start-book-id", type=int, default=None, help="Starting book ID")
 
     resume_subparser = subparsers.add_parser("resume", help="Resume crawling a previously started book")
     resume_subparser.add_argument("--source-book-id", required=True, help="Source book ID in lib.eshia.ir")
+    resume_subparser.add_argument("--start-book-id", type=int, default=None, help="Starting book ID")
 
     crawl_all_subparser = subparsers.add_parser("crawl-all", help="Crawl all books registered in SQLite")
     crawl_all_subparser.add_argument("--limit", type=int, default=0, help="Maximum number of books to crawl")
+    crawl_all_subparser.add_argument("--start-book-id", type=int, default=None, help="Starting book ID")
 
     category_subparser = subparsers.add_parser("crawl-category", help="Crawl all books in a specific category")
     category_subparser.add_argument(
@@ -163,6 +228,7 @@ def main() -> None:
         default=0,
         help="Maximum number of books to crawl in this category",
     )
+    category_subparser.add_argument("--start-book-id", type=int, default=None, help="Starting book ID")
 
     arguments = argument_parser.parse_args()
 

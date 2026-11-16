@@ -1,6 +1,8 @@
 import json
 import logging
+import random
 import re
+import string
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -32,28 +34,164 @@ def extract_volume_and_page_from_url(url: str) -> Tuple[int, int]:
     return 1, 0
 
 
-def detect_language(text: str) -> str:
-    if re.search(r"[گچپژکی]", text):
+PERSIAN_INDICATOR_WORDS = re.compile(
+    r"\b(?:است|بود|شد|شده|کرده|کرد|گفت|این|آن|برای|به|از|در|که|را|یک|هم|اما|اگر|وی|یا|های|ها|نمی|می|نیست|هست|بسیار|دیگر|پیش|پس|چون|چه|همه|هیچ|روی|زیر|میان|داشت|باشد|باشند|بودند|شدند|کردند|گفتار|یکم|دوم|سوم|چهارم)\b"
+)
+ARABIC_INDICATOR_WORDS = re.compile(
+    r"\b(?:في|على|عن|إلى|الى|من|لم|لن|أن|إن|أنما|إنما|ثم|كان|كانت|كانوا|يكون|تكون|ذلك|هذا|هذه|هؤلاء|التي|الذي|الذين|قال|روى|عنه|عليه|بين|كل)\b"
+)
+
+
+def detect_language(text: str, default_book_language: str = "fa") -> str:
+    cleaned_text = (text or "").strip()
+    if not cleaned_text:
+        return default_book_language
+
+    if re.search(r"[گچپژ]", cleaned_text):
         return "fa"
-    if re.search(r"[\u0600-\u06ff]", text):
+
+    if PERSIAN_INDICATOR_WORDS.search(cleaned_text):
+        return "fa"
+
+    if ARABIC_INDICATOR_WORDS.search(cleaned_text):
         return "ar"
+
+    if re.search(r"[\u0600-\u06ff]", cleaned_text):
+        return default_book_language
+
     return "en"
+
+
+def classify_text_language(text: str, default_book_language: str = "fa") -> str:
+    cleaned_text = (text or "").strip()
+    if not cleaned_text:
+        return default_book_language
+
+    if re.search(r"[گچپژ]", cleaned_text) or PERSIAN_INDICATOR_WORDS.search(cleaned_text):
+        return "fa"
+
+    if ARABIC_INDICATOR_WORDS.search(cleaned_text):
+        return "ar"
+
+    if re.search(r"[\u0600-\u06ff]", cleaned_text):
+        return default_book_language
+
+    return "en"
+
+
+def process_chunk_content(
+    chunk_content: str,
+    default_book_language: str = "fa",
+) -> Tuple[str, Optional[str], str]:
+    paragraphs = [p.strip() for p in chunk_content.split("\n\n") if p.strip()]
+    if not paragraphs:
+        paragraphs = [chunk_content]
+
+    fa_paragraphs: List[str] = []
+    other_paragraphs: List[str] = []
+
+    for para in paragraphs:
+        para_lang = classify_text_language(para, default_book_language)
+        if para_lang == "fa":
+            fa_paragraphs.append(para)
+        else:
+            other_paragraphs.append(para)
+
+    total_fa_length = sum(len(p) for p in fa_paragraphs)
+    total_other_length = sum(len(p) for p in other_paragraphs)
+
+    is_bilingual = (total_fa_length >= 30 and total_other_length >= 30)
+
+    if is_bilingual:
+        content_text = "\n\n".join(other_paragraphs)
+        content_fa_text = "\n\n".join(fa_paragraphs)
+        primary_lang = "ar"
+    else:
+        content_text = chunk_content
+        content_fa_text = None
+        if total_fa_length > total_other_length:
+            primary_lang = "fa"
+        elif total_other_length > 0:
+            primary_lang = "ar"
+        else:
+            primary_lang = default_book_language
+
+    return content_text, content_fa_text, primary_lang
+
+
+PERSIAN_ARABIC_TO_LATIN: Dict[str, str] = {
+    "ا": "a", "آ": "a", "أ": "a", "إ": "e", "ء": "", "ب": "b", "پ": "p", "ت": "t", "ث": "s",
+    "ج": "j", "چ": "ch", "ح": "h", "خ": "kh", "د": "d", "ذ": "z", "ر": "r", "ز": "z",
+    "ژ": "zh", "س": "s", "ش": "sh", "ص": "s", "ض": "z", "ط": "t", "ظ": "z", "ع": "a",
+    "غ": "gh", "ف": "f", "ق": "q", "ک": "k", "ك": "k", "گ": "g", "ل": "l", "م": "m",
+    "ن": "n", "و": "v", "ه": "h", "ة": "h", "ی": "y", "ي": "y", "ئ": "y",
+}
+
+
+def generate_book_slug(title: str) -> str:
+    cleaned_title = re.sub(r"^(کتاب|رساله|شرح|ترجمه|مجموعه)\s+", "", (title or "").strip())
+    title_words = cleaned_title.split()
+    if not title_words:
+        return "book"
+
+    first_word = title_words[0]
+    if first_word.startswith("ال") and len(first_word) > 3:
+        first_word = first_word[2:]
+
+    collected_chars: List[str] = []
+    for character in first_word:
+        latin_char = PERSIAN_ARABIC_TO_LATIN.get(character, "")
+        if latin_char:
+            collected_chars.append(latin_char)
+
+    slug = "".join(collected_chars)[:4]
+    if len(slug) < 3 and len(title_words) > 1:
+        second_word = title_words[1]
+        if second_word.startswith("ال") and len(second_word) > 3:
+            second_word = second_word[2:]
+        for character in second_word:
+            latin_char = PERSIAN_ARABIC_TO_LATIN.get(character, "")
+            if latin_char:
+                collected_chars.append(latin_char)
+        slug = "".join(collected_chars)[:4]
+
+    cleaned_slug = re.sub(r"[^a-z0-9]", "", slug.lower())
+    return cleaned_slug[:4] if cleaned_slug else "book"
+
+
+def generate_random_identifier(length: int = 8) -> str:
+    characters = string.ascii_lowercase + string.digits
+    return "".join(random.choices(characters, k=length))
+
+
+def create_entity_id(book_slug: str) -> str:
+    return f"{book_slug}_{generate_random_identifier(8)}"
+
+
+def create_book_document_prefix(title: str) -> str:
+    return generate_book_slug(title)
 
 
 def attach_page_ids_to_headings_tree(
     headings_tree: List[Dict[str, Any]],
-    book_id: str,
-    export_volume_number: int,
+    book_slug: str,
+    page_id_cache: Dict[int, str],
 ) -> None:
     for parent_item in headings_tree:
-        if parent_item.get("page_number") is not None:
-            parent_item["page_id"] = f"{book_id}_vol{export_volume_number}_p{parent_item['page_number']}"
+        page_num = parent_item.get("page_number")
+        if page_num is not None:
+            if page_num not in page_id_cache:
+                page_id_cache[page_num] = create_entity_id(book_slug)
+            parent_item["page_id"] = page_id_cache[page_num]
         else:
             parent_item["page_id"] = None
 
         for child_item in parent_item.get("children", []):
-            if child_item.get("page_number") is not None:
-                child_item["page_id"] = f"{book_id}_vol{export_volume_number}_p{child_item['page_number']}"
+            child_page_num = child_item.get("page_number")
+            if child_page_num is not None:
+                if child_page_num not in page_id_cache:
+                    page_id_cache[child_page_num] = create_entity_id(book_slug)
+                child_item["page_id"] = page_id_cache[child_page_num]
             else:
                 child_item["page_id"] = None
 
@@ -110,7 +248,12 @@ class BookCrawler:
 
         return [], 0
 
-    async def crawl(self, source_book_id: str, only_volume_number: Optional[int] = None) -> Dict[str, Any]:
+    async def crawl(
+        self,
+        source_book_id: str,
+        only_volume_number: Optional[int] = None,
+        custom_book_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         initial_info_url = f"{settings.BASE_URL.rstrip('/')}/{source_book_id}/1/0"
         try:
             initial_html = await self.site_client.fetch_html(initial_info_url)
@@ -120,13 +263,19 @@ class BookCrawler:
 
         title, author = extract_book_info(initial_html, initial_info_url)
         book_category = extract_category(initial_html)
+        book_language = detect_language(f"{title} {author} {book_category}", default_book_language="fa")
         book_id = self.database.register_book(
             source_id=source_book_id,
             title=title,
             author=author,
             url=initial_info_url,
             category=book_category,
+            assigned_book_id=custom_book_id,
         )
+        new_document_prefix = create_book_document_prefix(title or f"book_{source_book_id}")
+        document_prefix = self.database.get_or_set_document_prefix(source_book_id, new_document_prefix)
+        book_slug = document_prefix
+        page_id_cache: Dict[int, str] = {}
         book_directory = self.get_book_directory(book_id)
 
         all_detected_volumes = extract_available_volumes(initial_html)
@@ -184,7 +333,7 @@ class BookCrawler:
             )
 
             if volume_headings_tree:
-                attach_page_ids_to_headings_tree(volume_headings_tree, str(book_id), export_volume_number)
+                attach_page_ids_to_headings_tree(volume_headings_tree, book_slug, page_id_cache)
                 all_book_headings_trees.extend(volume_headings_tree)
                 total_sections_count += volume_sections_count
 
@@ -225,7 +374,9 @@ class BookCrawler:
 
                     consecutive_empty_pages_count = 0
                     chunks = chunk_page_content(paragraphs)
-                    page_identifier = f"{book_id}_vol{export_volume_number}_p{page_number}"
+                    if page_number not in page_id_cache:
+                        page_id_cache[page_number] = create_entity_id(book_slug)
+                    page_identifier = page_id_cache[page_number]
 
                     matching_heading_entry = find_matching_heading_entry(page_number, page_to_heading_mappings)
                     section_title = matching_heading_entry["section"] if matching_heading_entry else (page_heading or None)
@@ -236,15 +387,19 @@ class BookCrawler:
                     bab_title = matching_heading_entry.get("bab") if matching_heading_entry else None
 
                     chunk_records: List[Dict[str, Any]] = []
-                    for sub_order, chunk_content in enumerate(chunks, 1):
-                        detected_lang = detect_language(chunk_content)
+                    for sub_order, chunk_raw_text in enumerate(chunks, 1):
+                        content_text, content_fa_text, detected_lang = process_chunk_content(
+                            chunk_raw_text,
+                            default_book_language=book_language,
+                        )
+                        chunk_document_id = page_identifier if sub_order == 1 else create_entity_id(book_slug)
                         record: Dict[str, Any] = {
-                            "id": f"{page_identifier}_c{sub_order}",
+                            "id": chunk_document_id,
                             "main_type": book_category or "عمومی",
                             "sub_type": "book_page",
                             "book_id": str(book_id),
-                            "content": chunk_content,
-                            "content_fa": chunk_content if detected_lang == "fa" else None,
+                            "content": content_text,
+                            "content_fa": content_fa_text,
                             "content_xml": None,
                             "author": author or None,
                             "meta_info": {
@@ -373,6 +528,7 @@ class BookCrawler:
 
         return {
             "book_id": str(book_id),
+            "document_prefix": document_prefix,
             "source_book_id": str(source_book_id),
             "is_single_volume": is_single_volume_book,
             "headings_count": total_sections_count,

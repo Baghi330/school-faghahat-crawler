@@ -20,7 +20,7 @@ class Settings(BaseSettings):
 
     CONTENT_SELECTORS: str = "#book-page-content, .book-page-show, #contents_cover, #contents"
     TOC_SELECTORS: str = ".toc, #toc, .book-index, .index-content"
-    REMOVE_SELECTORS: str = ".sticky-menue, .tools, .content_headers, .Book_Title, .VolumeSelector, script, style, form, input, button, select, iframe, header, footer, nav, .pagination, .advertisement, .ads"
+    REMOVE_SELECTORS: str = ".sticky-menue, .tools, .Book_Title, .VolumeSelector, script, style, form, input, button, select, iframe, header, footer, nav, .pagination, .advertisement, .ads"
 
     CHUNK_TARGET_TOKENS: int = 450
     CHUNK_MAX_TOKENS: int = 650

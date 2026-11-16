@@ -199,40 +199,43 @@ def is_navigation_button(text: str) -> bool:
 def extract_page_content(html_content: str) -> Tuple[str, List[str], List[str]]:
     soup = BeautifulSoup(html_content, "lxml")
 
-    for remove_selector in settings.REMOVE_SELECTORS.split(","):
-        cleaned_selector = remove_selector.strip()
-        if cleaned_selector:
-            for removable_element in soup.select(cleaned_selector):
-                removable_element.decompose()
-
     content_container = None
     for content_selector in settings.CONTENT_SELECTORS.split(","):
         cleaned_selector = content_selector.strip()
         if not cleaned_selector:
             continue
-        candidate_element = soup.select_one(cleaned_selector)
-        if candidate_element and len(candidate_element.get_text(strip=True)) > 20:
-            content_container = candidate_element
-            break
+        try:
+            candidate_element = soup.select_one(cleaned_selector)
+            if candidate_element and len(candidate_element.get_text(strip=True)) > 20:
+                content_container = candidate_element
+                break
+        except Exception:
+            continue
 
     if content_container is None:
-        possible_candidates = soup.select("article, main, div")
-        content_container = max(
-            possible_candidates,
-            key=lambda element: len(element.get_text(strip=True)),
-            default=soup.body or soup,
-        )
+        content_container = soup.select_one("article, main, td.book-page-show, div.book-page-show")
+        if content_container is None:
+            content_container = soup.body or soup
 
-    for extra_tag in content_container.select("script, style, button, form, input, select"):
+    for remove_selector in settings.REMOVE_SELECTORS.split(","):
+        cleaned_selector = remove_selector.strip()
+        if cleaned_selector and cleaned_selector not in ("#book-page-content", ".book-page-show"):
+            try:
+                for removable_element in content_container.select(cleaned_selector):
+                    removable_element.decompose()
+            except Exception:
+                pass
+
+    for extra_tag in content_container.select("script, style, button, form, input, select, .sticky-menue, .tools"):
         extra_tag.decompose()
 
-    heading_element = content_container.find(["h1", "h2", "h3", "h4"])
+    heading_element = content_container.find(["h1", "h2", "h3", "h4"]) or content_container.select_one(".KalamateKhas")
     page_title = clean_text(heading_element.get_text()) if heading_element else ""
 
     paragraphs_list: List[str] = []
     for p_element in content_container.find_all("p"):
         paragraph_text = clean_text(p_element.get_text())
-        if len(paragraph_text) >= 15 and not is_navigation_button(paragraph_text):
+        if len(paragraph_text) >= 2 and not is_navigation_button(paragraph_text):
             if not paragraphs_list or paragraph_text != paragraphs_list[-1]:
                 paragraphs_list.append(paragraph_text)
 
@@ -240,7 +243,7 @@ def extract_page_content(html_content: str) -> Tuple[str, List[str], List[str]]:
         raw_lines = content_container.get_text("\n", strip=True).splitlines()
         for line in raw_lines:
             cleaned_line = clean_text(line)
-            if len(cleaned_line) >= 15 and not is_navigation_button(cleaned_line):
+            if len(cleaned_line) >= 2 and not is_navigation_button(cleaned_line):
                 if not paragraphs_list or cleaned_line != paragraphs_list[-1]:
                     paragraphs_list.append(cleaned_line)
 

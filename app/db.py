@@ -55,6 +55,11 @@ class DatabaseManager:
             self.connection.commit()
         except sqlite3.OperationalError:
             pass
+        try:
+            self.connection.execute("ALTER TABLE books ADD COLUMN document_prefix TEXT")
+            self.connection.commit()
+        except sqlite3.OperationalError:
+            pass
 
     def register_book(
         self,
@@ -63,13 +68,47 @@ class DatabaseManager:
         author: str = "",
         url: str = "",
         category: str = "",
+        assigned_book_id: Optional[str] = None,
     ) -> str:
+        if assigned_book_id is not None:
+            target_id = str(assigned_book_id)
+            self.connection.execute(
+                "UPDATE books SET book_id = NULL WHERE book_id = ? AND source_id != ?",
+                (target_id, str(source_id)),
+            )
+
+            existing_book = self.connection.execute(
+                "SELECT source_id FROM books WHERE source_id = ?",
+                (str(source_id),),
+            ).fetchone()
+
+            if existing_book:
+                self.connection.execute(
+                    """
+                    UPDATE books
+                    SET book_id = ?,
+                        title = CASE WHEN ? = '' THEN title ELSE ? END,
+                        author = CASE WHEN ? = '' THEN author ELSE ? END,
+                        url = CASE WHEN ? = '' THEN url ELSE ? END,
+                        category = CASE WHEN ? = '' THEN category ELSE ? END
+                    WHERE source_id = ?
+                    """,
+                    (target_id, title, title, author, author, url, url, category, category, str(source_id)),
+                )
+            else:
+                self.connection.execute(
+                    "INSERT INTO books (source_id, book_id, title, author, url, category) VALUES (?, ?, ?, ?, ?, ?)",
+                    (str(source_id), target_id, title, author, url, category),
+                )
+            self.connection.commit()
+            return target_id
+
         existing_book = self.connection.execute(
             "SELECT book_id FROM books WHERE source_id = ?",
             (str(source_id),),
         ).fetchone()
 
-        if existing_book:
+        if existing_book and existing_book["book_id"]:
             self.connection.execute(
                 """
                 UPDATE books
@@ -91,10 +130,24 @@ class DatabaseManager:
         next_numeric_id = max(1000000, (last_numeric_id or 999999) + 1)
         generated_book_id = str(next_numeric_id)
 
-        self.connection.execute(
-            "INSERT INTO books (source_id, book_id, title, author, url, category) VALUES (?, ?, ?, ?, ?, ?)",
-            (str(source_id), generated_book_id, title, author, url, category),
-        )
+        if existing_book:
+            self.connection.execute(
+                """
+                UPDATE books
+                SET book_id = ?,
+                    title = CASE WHEN ? = '' THEN title ELSE ? END,
+                    author = CASE WHEN ? = '' THEN author ELSE ? END,
+                    url = CASE WHEN ? = '' THEN url ELSE ? END,
+                    category = CASE WHEN ? = '' THEN category ELSE ? END
+                WHERE source_id = ?
+                """,
+                (generated_book_id, title, title, author, author, url, url, category, category, str(source_id)),
+            )
+        else:
+            self.connection.execute(
+                "INSERT INTO books (source_id, book_id, title, author, url, category) VALUES (?, ?, ?, ?, ?, ?)",
+                (str(source_id), generated_book_id, title, author, url, category),
+            )
         self.connection.commit()
         return generated_book_id
 
@@ -105,8 +158,24 @@ class DatabaseManager:
         )
         self.connection.commit()
 
+    def get_or_set_document_prefix(self, source_id: str, new_prefix: str) -> str:
+        cursor = self.connection.execute(
+            "SELECT document_prefix FROM books WHERE source_id = ?",
+            (str(source_id),),
+        )
+        row = cursor.fetchone()
+        if row and row["document_prefix"]:
+            return str(row["document_prefix"])
+
+        self.connection.execute(
+            "UPDATE books SET document_prefix = ? WHERE source_id = ?",
+            (new_prefix, str(source_id)),
+        )
+        self.connection.commit()
+        return new_prefix
+
     def list_books(self, limit: int = 0) -> List[Dict[str, Any]]:
-        query = "SELECT * FROM books ORDER BY CAST(book_id AS INTEGER)"
+        query = "SELECT * FROM books ORDER BY rowid ASC"
         if limit > 0:
             query += f" LIMIT {int(limit)}"
         cursor = self.connection.execute(query)
