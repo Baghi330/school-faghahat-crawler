@@ -4,7 +4,7 @@ import re
 import urllib.robotparser
 from collections import deque
 from typing import Dict, Optional
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote, unquote, urljoin, urlparse
 
 import httpx
 
@@ -83,7 +83,8 @@ class SiteClient:
             self.robot_parser = None
 
     async def discover_books(self) -> Dict[str, str]:
-        discovery_queue: deque = deque([settings.START_URL])
+        all_books_url = urljoin(settings.BASE_URL, "/all")
+        discovery_queue: deque = deque([all_books_url, settings.START_URL])
         seen_urls = set()
         discovered_books: Dict[str, str] = {}
         base_network_location = urlparse(settings.BASE_URL).netloc
@@ -126,7 +127,42 @@ class SiteClient:
                 ):
                     discovery_queue.append(absolute_url)
 
+            if len(discovered_books) >= 5000:
+                break
+
         return discovered_books
+
+    async def discover_category_books(self, category_or_url: str) -> Dict[str, str]:
+        cleaned_input = unquote(category_or_url.strip())
+        if cleaned_input.startswith("http://") or cleaned_input.startswith("https://"):
+            target_url = cleaned_input
+        elif "/" in cleaned_input:
+            target_url = urljoin(settings.BASE_URL, cleaned_input)
+        else:
+            normalized_name = cleaned_input.replace(" ", "_")
+            target_url = f"{settings.BASE_URL.rstrip('/')}/{normalized_name}/all"
+
+        encoded_target_url = quote(target_url, safe=":/?#[]@!$&'()*+,;=")
+        logger.info("Fetching category page: %s", target_url)
+
+        page_html = await self.fetch_html(encoded_target_url)
+
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(page_html, "lxml")
+        category_books: Dict[str, str] = {}
+
+        for anchor_element in soup.select("a[href]"):
+            raw_href = anchor_element.get("href", "").strip()
+            parsed_path = urlparse(raw_href).path
+            path_match = BOOK_PATH_PATTERN.match(parsed_path)
+            if path_match:
+                source_id, volume, page = path_match.groups()
+                if source_id and (not volume or (volume == "1" and page == "0")):
+                    standard_book_url = f"{settings.BASE_URL.rstrip('/')}/{source_id}/1/0"
+                    category_books.setdefault(source_id, standard_book_url)
+
+        return category_books
 
     @staticmethod
     def build_page_url(source_book_id: str, volume_number: int, page_number: int) -> str:

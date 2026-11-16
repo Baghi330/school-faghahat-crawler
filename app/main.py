@@ -74,6 +74,58 @@ async def execute_crawl_all(arguments: argparse.Namespace) -> None:
             await crawler.close()
 
 
+async def execute_crawl_category(arguments: argparse.Namespace) -> None:
+    site_client = SiteClient()
+    database = DatabaseManager()
+    category_input = arguments.category
+
+    logger.info("Discovering books for category: %s", category_input)
+    try:
+        category_books = await site_client.discover_category_books(category_input)
+        if not category_books:
+            logger.warning("No books found for category: %s", category_input)
+            return
+
+        logger.info("Discovered %s books in category '%s'", len(category_books), category_input)
+
+        registered_books_list = []
+        for source_id, book_url in category_books.items():
+            database.register_discovered_url(book_url, source_id)
+            assigned_book_id = database.register_book(source_id, url=book_url)
+            registered_books_list.append({
+                "source_id": source_id,
+                "book_id": assigned_book_id,
+                "url": book_url,
+            })
+    finally:
+        await site_client.close()
+        database.close()
+
+    limit_count = getattr(arguments, "limit", 0)
+    if limit_count > 0:
+        registered_books_list = registered_books_list[:limit_count]
+
+    total_to_crawl = len(registered_books_list)
+    logger.info("Starting crawl for %s books in category '%s'...", total_to_crawl, category_input)
+
+    for index, book_entry in enumerate(registered_books_list, 1):
+        crawler = BookCrawler()
+        try:
+            logger.info(
+                "[%s/%s] Crawling book source_id=%s (book_id=%s)...",
+                index,
+                total_to_crawl,
+                book_entry["source_id"],
+                book_entry["book_id"],
+            )
+            result = await crawler.crawl(book_entry["source_id"])
+            logger.info("Finished book %s: %s", book_entry["source_id"], result.get("book_id"))
+        except Exception:
+            logger.exception("Failed to crawl category book %s", book_entry["source_id"])
+        finally:
+            await crawler.close()
+
+
 def main() -> None:
     numeric_log_level = getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO)
     logging.basicConfig(
@@ -99,6 +151,19 @@ def main() -> None:
     crawl_all_subparser = subparsers.add_parser("crawl-all", help="Crawl all books registered in SQLite")
     crawl_all_subparser.add_argument("--limit", type=int, default=0, help="Maximum number of books to crawl")
 
+    category_subparser = subparsers.add_parser("crawl-category", help="Crawl all books in a specific category")
+    category_subparser.add_argument(
+        "--category",
+        required=True,
+        help="Category name or URL (e.g., 'سیاسی' or 'https://lib.eshia.ir/سیاسی/all')",
+    )
+    category_subparser.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="Maximum number of books to crawl in this category",
+    )
+
     arguments = argument_parser.parse_args()
 
     if arguments.command == "discover":
@@ -109,6 +174,8 @@ def main() -> None:
         asyncio.run(execute_single_crawl(arguments))
     elif arguments.command == "crawl-all":
         asyncio.run(execute_crawl_all(arguments))
+    elif arguments.command == "crawl-category":
+        asyncio.run(execute_crawl_category(arguments))
 
 
 if __name__ == "__main__":

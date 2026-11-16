@@ -1,6 +1,6 @@
 import re
-from typing import Dict, List, Optional, Set, Tuple
-from urllib.parse import urljoin, urlparse
+from typing import Any, Dict, List, Optional, Set, Tuple
+from urllib.parse import unquote, urljoin, urlparse
 
 from bs4 import BeautifulSoup
 
@@ -102,6 +102,20 @@ def extract_book_info(html_content: str, source_url: str = "") -> Tuple[str, str
                 author_name = candidate
 
     return book_title, author_name
+
+
+def extract_category(html_content: str) -> str:
+    soup = BeautifulSoup(html_content, "lxml")
+    for anchor in soup.find_all("a"):
+        raw_href = unquote(anchor.get("href", ""))
+        parsed_url = urlparse(raw_href)
+        path_segments = [segment for segment in parsed_url.path.strip("/").split("/") if segment]
+        if len(path_segments) >= 2 and path_segments[-1] == "all" and path_segments[0] != "all":
+            category_candidate = path_segments[0].replace("_", " ").strip()
+            if category_candidate:
+                return category_candidate
+
+    return "عمومی"
 
 
 def extract_volume_navigation(html_content: str) -> Dict[str, Optional[int]]:
@@ -237,6 +251,137 @@ def extract_page_content(html_content: str) -> Tuple[str, List[str], List[str]]:
             footnotes_list.append(footnote_text)
 
     return page_title, paragraphs_list, footnotes_list
+
+
+PARENT_SECTION_PATTERN = re.compile(
+    r"^(?:فصل|بخش|باب|درس|المقصد|الفصل|الباب|المبحث|المدخل|كتاب|الكتاب|جزء|پيش‌گفتار|پیش‌گفتار|مقدمه)\b",
+    re.IGNORECASE,
+)
+
+
+def extract_headings_tree(html_content: str) -> Tuple[List[Dict[str, Any]], int]:
+    soup = BeautifulSoup(html_content, "lxml")
+    table_element = soup.select_one(".fehresttable")
+    if not table_element:
+        return [], 0
+
+    headings_tree: List[Dict[str, Any]] = []
+    current_parent_section: Optional[Dict[str, Any]] = None
+    section_order = 0
+
+    for table_row in table_element.find_all("tr"):
+        table_cells = table_row.find_all("td")
+        if len(table_cells) < 2:
+            continue
+
+        title_text = clean_text(table_cells[0].get_text(" ", strip=True))
+        if not title_text or is_navigation_button(title_text):
+            continue
+
+        raw_page_digits = "".join(character for character in table_cells[1].get_text(strip=True) if character.isdigit())
+        page_number = int(raw_page_digits) if raw_page_digits else None
+
+        section_order += 1
+
+        is_parent_section = False
+        if page_number is None:
+            is_parent_section = True
+        elif PARENT_SECTION_PATTERN.search(title_text) and not title_text.startswith("-"):
+            is_parent_section = True
+
+        if is_parent_section:
+            current_parent_section = {
+                "page_number": page_number,
+                "level": 1,
+                "title": title_text,
+                "section_order": section_order,
+                "children": [],
+            }
+            headings_tree.append(current_parent_section)
+        else:
+            child_node = {
+                "page_number": page_number,
+                "level": 2 if current_parent_section is not None else 1,
+                "title": title_text,
+                "section_order": section_order,
+                "children": [],
+            }
+            if current_parent_section is not None:
+                current_parent_section["children"].append(child_node)
+            else:
+                headings_tree.append(child_node)
+
+    return headings_tree, section_order
+
+
+def build_page_to_heading_mapping(headings_tree: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    flattened_entries: List[Dict[str, Any]] = []
+
+    for parent_item in headings_tree:
+        parent_title = parent_item["title"]
+        parent_page = parent_item.get("page_number")
+        parent_order = parent_item.get("section_order", 1)
+
+        if parent_page is not None:
+            flattened_entries.append({
+                "child_id": f"child_{parent_order}",
+                "section": parent_title,
+                "parent_section_id": f"sec_{parent_order}",
+                "child_path": parent_title,
+                "headings": [parent_title],
+                "page_number": parent_page,
+                "bab": parent_title if any(keyword in parent_title for keyword in ["باب", "درس"]) else None,
+            })
+
+        for child_item in parent_item.get("children", []):
+            child_title = child_item["title"]
+            child_page = child_item.get("page_number")
+            child_order = child_item.get("section_order", 1)
+            full_path = f"{parent_title} / {child_title}" if parent_title else child_title
+            combined_headings = [parent_title, child_title] if parent_title else [child_title]
+
+            bab_name = None
+            if parent_title and any(keyword in parent_title for keyword in ["باب", "درس"]):
+                bab_name = parent_title
+            elif any(keyword in child_title for keyword in ["باب", "درس"]):
+                bab_name = child_title
+
+            if child_page is not None:
+                flattened_entries.append({
+                    "child_id": f"child_{child_order}",
+                    "section": child_title,
+                    "parent_section_id": f"sec_{parent_order}",
+                    "child_path": full_path,
+                    "headings": combined_headings,
+                    "page_number": child_page,
+                    "bab": bab_name,
+                })
+
+    flattened_entries.sort(key=lambda item: item["page_number"])
+    return flattened_entries
+
+
+def find_matching_heading_entry(
+    page_number: int,
+    sorted_page_mappings: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    if not sorted_page_mappings:
+        return None
+
+    matched_entry: Optional[Dict[str, Any]] = None
+    for candidate in sorted_page_mappings:
+        if candidate["page_number"] <= page_number:
+            matched_entry = candidate
+        else:
+            break
+
+    return matched_entry
+
+
+# Aliases for backward compatibility
+extract_table_of_contents_tree = extract_headings_tree
+build_page_to_toc_mapping = build_page_to_heading_mapping
+find_matching_toc_entry = find_matching_heading_entry
 
 
 # Aliases for backward compatibility

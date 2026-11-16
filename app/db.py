@@ -27,7 +27,8 @@ class DatabaseManager:
                 book_id TEXT UNIQUE,
                 title TEXT,
                 author TEXT,
-                url TEXT
+                url TEXT,
+                category TEXT
             );
 
             CREATE TABLE IF NOT EXISTS pages (
@@ -49,6 +50,11 @@ class DatabaseManager:
             """
         )
         self.connection.commit()
+        try:
+            self.connection.execute("ALTER TABLE books ADD COLUMN category TEXT")
+            self.connection.commit()
+        except sqlite3.OperationalError:
+            pass
 
     def register_book(
         self,
@@ -56,6 +62,7 @@ class DatabaseManager:
         title: str = "",
         author: str = "",
         url: str = "",
+        category: str = "",
     ) -> str:
         existing_book = self.connection.execute(
             "SELECT book_id FROM books WHERE source_id = ?",
@@ -68,10 +75,11 @@ class DatabaseManager:
                 UPDATE books
                 SET title = CASE WHEN ? = '' THEN title ELSE ? END,
                     author = CASE WHEN ? = '' THEN author ELSE ? END,
-                    url = CASE WHEN ? = '' THEN url ELSE ? END
+                    url = CASE WHEN ? = '' THEN url ELSE ? END,
+                    category = CASE WHEN ? = '' THEN category ELSE ? END
                 WHERE source_id = ?
                 """,
-                (title, title, author, author, url, url, str(source_id)),
+                (title, title, author, author, url, url, category, category, str(source_id)),
             )
             self.connection.commit()
             return str(existing_book["book_id"])
@@ -84,8 +92,8 @@ class DatabaseManager:
         generated_book_id = str(next_numeric_id)
 
         self.connection.execute(
-            "INSERT INTO books (source_id, book_id, title, author, url) VALUES (?, ?, ?, ?, ?)",
-            (str(source_id), generated_book_id, title, author, url),
+            "INSERT INTO books (source_id, book_id, title, author, url, category) VALUES (?, ?, ?, ?, ?, ?)",
+            (str(source_id), generated_book_id, title, author, url, category),
         )
         self.connection.commit()
         return generated_book_id

@@ -73,6 +73,20 @@ python -m app.main crawl-all
 python -m app.main crawl-all --limit 10
 ```
 
+برای Crawl بر اساس دسته‌بندی موضوعی (با تفکیک کامل کتاب‌ها):
+
+```bash
+# بر اساس آدرس صفحه دسته‌بندی
+python -m app.main crawl-category --category "https://lib.eshia.ir/سیاسی/all"
+
+# یا بر اساس نام دسته‌بندی
+python -m app.main crawl-category --category "سیاسی"
+python -m app.main crawl-category --category "علوم عقلی"
+
+# یا محدود کردن به تعداد مشخصی از کتاب‌های آن دسته
+python -m app.main crawl-category --category "سیاسی" --limit 5
+```
+
 ## نکات مهم
 
 1. این نسخه فقط فایل JSON/JSONL تولید می‌کند؛ نه به Elasticsearch وصل می‌شود و نه Embedding می‌سازد.
