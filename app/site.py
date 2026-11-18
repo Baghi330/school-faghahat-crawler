@@ -140,7 +140,7 @@ class SiteClient:
             target_url = urljoin(settings.BASE_URL, cleaned_input)
         else:
             normalized_name = cleaned_input.replace(" ", "_")
-            target_url = f"{settings.BASE_URL.rstrip('/')}/{normalized_name}/all"
+            target_url = f"{settings.BASE_URL.rstrip('/')}/{normalized_name}"
 
         encoded_target_url = quote(target_url, safe=":/?#[]@!$&'()*+,;=")
         logger.info("Fetching category page: %s", target_url)
@@ -161,6 +161,23 @@ class SiteClient:
                 if source_id and (not volume or (volume == "1" and page == "0")):
                     standard_book_url = f"{settings.BASE_URL.rstrip('/')}/{source_id}/1/0"
                     category_books.setdefault(source_id, standard_book_url)
+
+        if not category_books and target_url.endswith("/all"):
+            fallback_url = target_url[:-4]
+            if fallback_url != settings.BASE_URL.rstrip("/"):
+                logger.info("Retrying category discovery without /all: %s", fallback_url)
+                encoded_fallback_url = quote(fallback_url, safe=":/?#[]@!$&'()*+,;=")
+                fallback_html = await self.fetch_html(encoded_fallback_url)
+                fallback_soup = BeautifulSoup(fallback_html, "lxml")
+                for anchor_element in fallback_soup.select("a[href]"):
+                    raw_href = anchor_element.get("href", "").strip()
+                    parsed_path = urlparse(raw_href).path
+                    path_match = BOOK_PATH_PATTERN.match(parsed_path)
+                    if path_match:
+                        source_id, volume, page = path_match.groups()
+                        if source_id and (not volume or (volume == "1" and page == "0")):
+                            standard_book_url = f"{settings.BASE_URL.rstrip('/')}/{source_id}/1/0"
+                            category_books.setdefault(source_id, standard_book_url)
 
         return category_books
 
