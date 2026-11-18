@@ -147,15 +147,17 @@ async def execute_crawl_category(arguments: argparse.Namespace) -> None:
     site_client = SiteClient()
     database = DatabaseManager()
     category_input = arguments.category
+    subcategory_input = getattr(arguments, "sub_category", None)
+    category_display = f"{category_input} / {subcategory_input}" if subcategory_input else category_input
 
-    logger.info("Discovering books for category: %s", category_input)
+    logger.info("Discovering books for category: %s", category_display)
     try:
-        category_books = await site_client.discover_category_books(category_input)
+        category_books = await site_client.discover_category_books(category_input, subcategory_input)
         if not category_books:
-            logger.warning("No books found for category: %s", category_input)
+            logger.warning("No books found for category: %s", category_display)
             return
 
-        logger.info("Discovered %s books in category '%s'", len(category_books), category_input)
+        logger.info("Discovered %s books in category '%s'", len(category_books), category_display)
 
         for source_id, book_url in category_books.items():
             database.register_discovered_url(book_url, source_id)
@@ -183,11 +185,11 @@ async def execute_crawl_category(arguments: argparse.Namespace) -> None:
         logger.info(
             "Found %s already completed books in category '%s'. They will be skipped.",
             len(completed_books),
-            category_input,
+            category_display,
         )
 
     if not remaining_books:
-        logger.info("All %s books in category '%s' are already completed!", len(category_items), category_input)
+        logger.info("All %s books in category '%s' are already completed!", len(category_items), category_display)
         return
 
     total_remaining = len(remaining_books)
@@ -196,7 +198,7 @@ async def execute_crawl_category(arguments: argparse.Namespace) -> None:
     logger.info(
         "Resuming crawl for %s remaining books in category '%s' (Starting Book ID: %s)...",
         total_remaining,
-        category_input,
+        category_display,
         start_book_id,
     )
 
@@ -254,7 +256,16 @@ def main() -> None:
     category_subparser.add_argument(
         "--category",
         required=True,
-        help="Category name or URL (e.g., 'سیاسی' or 'https://lib.eshia.ir/سیاسی/all')",
+        help="Category name or URL (e.g., 'تاریخ و جغرافیا' or 'https://lib.eshia.ir/تاریخ_و_جغرافیا/تاریخ')",
+    )
+    category_subparser.add_argument(
+        "--sub-category",
+        "--subcategory",
+        "--sub",
+        type=str,
+        default=None,
+        dest="sub_category",
+        help="Sub-category name (e.g., 'تاریخ' or 'دفاع_مقدس')",
     )
     category_subparser.add_argument(
         "--limit",

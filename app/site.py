@@ -132,12 +132,22 @@ class SiteClient:
 
         return discovered_books
 
-    async def discover_category_books(self, category_or_url: str) -> Dict[str, str]:
+    async def discover_category_books(
+        self, category_or_url: str, sub_category: Optional[str] = None
+    ) -> Dict[str, str]:
         cleaned_input = unquote(category_or_url.strip())
-        if cleaned_input.startswith("http://") or cleaned_input.startswith("https://"):
+        if sub_category:
+            cleaned_sub = unquote(sub_category.strip()).replace(" ", "_")
+            if cleaned_input.startswith("http://") or cleaned_input.startswith("https://"):
+                target_url = f"{cleaned_input.rstrip('/')}/{cleaned_sub}"
+            else:
+                cleaned_main = cleaned_input.strip("/").replace(" ", "_")
+                target_url = f"{settings.BASE_URL.rstrip('/')}/{cleaned_main}/{cleaned_sub}"
+        elif cleaned_input.startswith("http://") or cleaned_input.startswith("https://"):
             target_url = cleaned_input
         elif "/" in cleaned_input:
-            target_url = urljoin(settings.BASE_URL, cleaned_input)
+            cleaned_path = cleaned_input.strip("/").replace(" ", "_")
+            target_url = f"{settings.BASE_URL.rstrip('/')}/{cleaned_path}"
         else:
             normalized_name = cleaned_input.replace(" ", "_")
             target_url = f"{settings.BASE_URL.rstrip('/')}/{normalized_name}"
