@@ -123,19 +123,29 @@ class SiteClient:
                 elif (
                     absolute_url.startswith(settings.BASE_URL)
                     and absolute_url not in seen_urls
-                    and len(discovery_queue) < 2000
+                    and len(discovery_queue) < 5000
                 ):
                     discovery_queue.append(absolute_url)
 
-            if len(discovered_books) >= 5000:
-                break
-
         return discovered_books
+
+    CATEGORY_ALIASES = {
+        "تاریخ": "تاریخ_و_جغرافیا/تاریخ",
+        "دفاع_مقدس": "تاریخ_و_جغرافیا/دفاع_مقدس",
+        "سفرنامه_ها": "تاریخ_و_جغرافیا/سفرنامه_ها",
+        "سفرنامه‌ها": "تاریخ_و_جغرافیا/سفرنامه_ها",
+        "زندگینامه": "تاریخ_و_جغرافیا/زندگینامه",
+        "جغرافیا": "تاریخ_و_جغرافیا/جغرافیا",
+    }
 
     async def discover_category_books(
         self, category_or_url: str, sub_category: Optional[str] = None
     ) -> Dict[str, str]:
         cleaned_input = unquote(category_or_url.strip())
+        normalized_check = cleaned_input.replace(" ", "_")
+        if normalized_check in self.CATEGORY_ALIASES and not sub_category:
+            cleaned_input = self.CATEGORY_ALIASES[normalized_check]
+
         if sub_category:
             cleaned_sub = unquote(sub_category.strip()).replace(" ", "_")
             if cleaned_input.startswith("http://") or cleaned_input.startswith("https://"):
@@ -150,7 +160,7 @@ class SiteClient:
             target_url = f"{settings.BASE_URL.rstrip('/')}/{cleaned_path}"
         else:
             normalized_name = cleaned_input.replace(" ", "_")
-            target_url = f"{settings.BASE_URL.rstrip('/')}/{normalized_name}"
+            target_url = f"{settings.BASE_URL.rstrip('/')}/{normalized_name}/all"
 
         encoded_target_url = quote(target_url, safe=":/?#[]@!$&'()*+,;=")
         logger.info("Fetching category page: %s", target_url)
