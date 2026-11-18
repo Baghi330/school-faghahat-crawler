@@ -95,21 +95,33 @@ async def execute_crawl_all(arguments: argparse.Namespace) -> None:
 
     database = DatabaseManager()
     target_books = database.list_books(arguments.limit)
+
+    completed_count = 0
+    remaining_books = []
+    for book_entry in target_books:
+        if database.is_book_completed(book_entry["source_id"]):
+            completed_count += 1
+        else:
+            remaining_books.append(book_entry)
+
     database.close()
 
-    total_to_crawl = len(target_books)
+    if completed_count > 0:
+        logger.info("Found %s already completed books. Skipping them.", completed_count)
+
+    total_to_crawl = len(remaining_books)
     if total_to_crawl == 0:
-        logger.warning("No books found in database to crawl.")
+        logger.info("All books are already completed!")
         return
 
     start_book_id = prompt_for_start_book_id(getattr(arguments, "start_book_id", None))
     logger.info(
-        "Starting crawl-all for %s books (Starting Book ID: %s)...",
+        "Starting crawl for %s books (Starting Book ID: %s)...",
         total_to_crawl,
         start_book_id,
     )
 
-    for offset, book_entry in enumerate(target_books):
+    for offset, book_entry in enumerate(remaining_books):
         current_book_id = str(start_book_id + offset)
         crawler = BookCrawler()
         try:
@@ -149,31 +161,53 @@ async def execute_crawl_category(arguments: argparse.Namespace) -> None:
             database.register_discovered_url(book_url, source_id)
     finally:
         await site_client.close()
-        database.close()
 
     limit_count = getattr(arguments, "limit", 0)
     category_items = list(category_books.items())
     if limit_count > 0:
         category_items = category_items[:limit_count]
 
-    total_to_crawl = len(category_items)
+    completed_books = []
+    remaining_books = []
+
+    for source_id, book_url in category_items:
+        existing_book_id = database.is_book_completed(source_id)
+        if existing_book_id:
+            completed_books.append((source_id, existing_book_id))
+        else:
+            remaining_books.append((source_id, book_url))
+
+    database.close()
+
+    if completed_books:
+        logger.info(
+            "Found %s already completed books in category '%s'. They will be skipped.",
+            len(completed_books),
+            category_input,
+        )
+
+    if not remaining_books:
+        logger.info("All %s books in category '%s' are already completed!", len(category_items), category_input)
+        return
+
+    total_remaining = len(remaining_books)
     start_book_id = prompt_for_start_book_id(getattr(arguments, "start_book_id", None))
 
     logger.info(
-        "Starting crawl for %s books in category '%s' (Starting Book ID: %s)...",
-        total_to_crawl,
+        "Resuming crawl for %s remaining books in category '%s' (Starting Book ID: %s)...",
+        total_remaining,
         category_input,
         start_book_id,
     )
 
-    for offset, (source_id, book_url) in enumerate(category_items):
+    for offset, (source_id, book_url) in enumerate(remaining_books):
         current_book_id = str(start_book_id + offset)
         crawler = BookCrawler()
         try:
             logger.info(
                 "[%s/%s] Crawling book source_id=%s with book_id=%s...",
                 offset + 1,
-                total_to_crawl,
+                total_remaining,
                 source_id,
                 current_book_id,
             )

@@ -294,15 +294,17 @@ class BookCrawler:
                 for detected_vol in all_detected_volumes:
                     volume_mappings.append((detected_vol, detected_vol))
 
-        all_book_headings_trees: List[Dict[str, Any]] = []
-        total_sections_count = 0
+        total_volumes_count = 1 if is_single_volume_book else len(all_detected_volumes)
 
+        total_headings_count = 0
         total_pages_saved = 0
         total_chunks_saved = 0
         encountered_errors: List[Dict[str, str]] = []
         global_page_order = 0
 
         for site_volume_number, export_volume_number in volume_mappings:
+            volume_pages_saved = 0
+            volume_chunks_saved = 0
             volume_first_page_url = self.site_client.build_page_url(source_book_id, site_volume_number, 0)
             try:
                 volume_landing_html = await self.site_client.fetch_html(volume_first_page_url)
@@ -334,9 +336,8 @@ class BookCrawler:
 
             if volume_headings_tree:
                 attach_page_ids_to_headings_tree(volume_headings_tree, book_slug, page_id_cache)
-                all_book_headings_trees.extend(volume_headings_tree)
-                total_sections_count += volume_sections_count
 
+            total_headings_count += volume_sections_count
             page_to_heading_mappings = build_page_to_heading_mapping(volume_headings_tree)
 
             if not is_bounded_by_last_page:
@@ -469,6 +470,8 @@ class BookCrawler:
                         "completed",
                         len(chunk_records),
                     )
+                    volume_chunks_saved += len(chunk_records)
+                    volume_pages_saved += 1
                     total_chunks_saved += len(chunk_records)
                     total_pages_saved += 1
                     logger.info(
@@ -493,36 +496,64 @@ class BookCrawler:
                         str(error),
                     )
 
-        volume_document_id = f"{book_id}_v{volume_mappings[0][1]}" if volume_mappings else f"{book_id}_v0"
-        volume_number_value = volume_mappings[0][1] if volume_mappings else 0
+            completed_pages_for_volume = self.database.get_completed_pages(source_book_id, export_volume_number)
+            actual_volume_pages_count = len(completed_pages_for_volume) if completed_pages_for_volume else volume_pages_saved
+            if not actual_volume_pages_count and volume_output_file.exists():
+                try:
+                    with open(volume_output_file, "r", encoding="utf-8") as jsonl_file:
+                        pages_in_file = {json.loads(line)["page_number"] for line in jsonl_file if line.strip()}
+                    actual_volume_pages_count = len(pages_in_file)
+                except Exception:
+                    actual_volume_pages_count = volume_pages_saved
 
-        book_data = {
-            "id": volume_document_id,
-            "main_type": book_category or "عمومی",
-            "book_id": int(book_id) if str(book_id).isdigit() else book_id,
-            "author": author or None,
-            "meta_info": {
-                "ref_books": None,
-                "keywords": [],
-            },
-            "book_title": title or f"کتاب {source_book_id}",
-            "volume_number": int(volume_number_value),
-            "section_count": total_sections_count,
-            "page_count": total_pages_saved,
-            "child_order": 1,
-            "ref_key": "school_faghahat",
-            "ref_url": initial_info_url,
-            "headings": all_book_headings_trees,
-        }
-        self.write_atomic_json(book_directory / "book.json", book_data)
+            volume_document_id = f"{book_id}_v{export_volume_number}"
+            volume_url = self.site_client.build_page_url(source_book_id, site_volume_number, 0)
+
+            volume_book_data = {
+                "id": volume_document_id,
+                "main_type": book_category or "عمومی",
+                "book_id": int(book_id) if str(book_id).isdigit() else book_id,
+                "author": author or None,
+                "meta_info": {
+                    "ref_books": None,
+                    "keywords": [],
+                },
+                "book_title": title or f"کتاب {source_book_id}",
+                "volume_number": int(export_volume_number),
+                "total_volumes": int(total_volumes_count),
+                "section_count": volume_sections_count,
+                "page_count": actual_volume_pages_count,
+                "child_order": 1,
+                "ref_key": "school_faghahat",
+                "ref_url": volume_url,
+                "headings": volume_headings_tree,
+            }
+
+            if is_single_volume_book:
+                self.write_atomic_json(book_directory / "book.json", volume_book_data)
+                self.write_atomic_json(book_directory / "book_v0.json", volume_book_data)
+            else:
+                self.write_atomic_json(book_directory / f"book_v{export_volume_number}.json", volume_book_data)
+
+        if not is_single_volume_book:
+            legacy_book_json = book_directory / "book.json"
+            if legacy_book_json.exists():
+                try:
+                    legacy_book_json.unlink()
+                except OSError:
+                    pass
 
         manifest_data = {
-            **book_data,
+            "book_id": int(book_id) if str(book_id).isdigit() else book_id,
+            "book_title": title or f"کتاب {source_book_id}",
+            "author": author or None,
+            "main_type": book_category or "عمومی",
+            "total_volumes": int(total_volumes_count),
             "crawl_updated_at": datetime.now(timezone.utc).isoformat(),
             "last_run_pages_saved": total_pages_saved,
             "last_run_chunks_saved": total_chunks_saved,
             "errors": encountered_errors,
-            "files": sorted(file_path.name for file_path in book_directory.glob("volume_*.jsonl")),
+            "files": sorted(file_path.name for file_path in book_directory.glob("*.json*") if file_path.name != "manifest.json"),
         }
         self.write_atomic_json(book_directory / "manifest.json", manifest_data)
 
@@ -531,7 +562,7 @@ class BookCrawler:
             "document_prefix": document_prefix,
             "source_book_id": str(source_book_id),
             "is_single_volume": is_single_volume_book,
-            "headings_count": total_sections_count,
+            "headings_count": total_headings_count,
             "pages_saved_this_run": total_pages_saved,
             "chunks_saved_this_run": total_chunks_saved,
             "output": str(book_directory),

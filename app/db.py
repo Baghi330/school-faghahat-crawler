@@ -174,6 +174,19 @@ class DatabaseManager:
         self.connection.commit()
         return new_prefix
 
+    def is_book_completed(self, source_id: str) -> Optional[str]:
+        cursor = self.connection.execute(
+            "SELECT book_id FROM books WHERE source_id = ? AND book_id IS NOT NULL",
+            (str(source_id),),
+        )
+        row = cursor.fetchone()
+        if row and row["book_id"]:
+            assigned_id = str(row["book_id"])
+            book_dir = Path(settings.OUTPUT_DIR) / "books" / assigned_id
+            if (book_dir / "manifest.json").exists() or (book_dir / "book.json").exists() or any(book_dir.glob("book_v*.json")):
+                return assigned_id
+        return None
+
     def list_books(self, limit: int = 0) -> List[Dict[str, Any]]:
         query = "SELECT * FROM books ORDER BY rowid ASC"
         if limit > 0:
